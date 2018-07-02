@@ -1,5 +1,7 @@
 package com.wavesplatform.matcher.market
 
+import java.util.concurrent.ConcurrentHashMap
+
 import akka.actor.{Actor, ActorRef, ActorSystem, Props}
 import akka.http.scaladsl.model.StatusCodes
 import akka.persistence.inmemory.extension.{InMemoryJournalStorage, StorageExtension}
@@ -11,7 +13,7 @@ import com.wavesplatform.matcher.fixtures.RestartableActor.RestartActor
 import com.wavesplatform.matcher.market.MatcherActor.{GetMarkets, GetMarketsResponse, MarketData}
 import com.wavesplatform.matcher.market.OrderBookActor._
 import com.wavesplatform.matcher.market.OrderHistoryActor.{ValidateOrder, ValidateOrderResult}
-import com.wavesplatform.matcher.model.LevelAgg
+import com.wavesplatform.matcher.model.{LevelAgg, OrderBook}
 import com.wavesplatform.settings.WalletSettings
 import com.wavesplatform.state.{AssetDescription, Blockchain, ByteStr, LeaseBalance, Portfolio}
 import com.wavesplatform.utx.UtxPool
@@ -55,8 +57,14 @@ class MatcherActorSpecification
       case _                   =>
     }
   })
-  var actor: ActorRef = system.actorOf(Props(
-    new MatcherActor(orderHistoryRef, wallet, mock[UtxPool], mock[ChannelGroup], settings, blockchain, functionalitySettings) with RestartableActor))
+
+  val obc                                              = new ConcurrentHashMap[AssetPair, OrderBook]()
+  def update(ap: AssetPair)(snapshot: OrderBook): Unit = obc.put(ap, snapshot)
+
+  var actor: ActorRef = system.actorOf(
+    Props(
+      new MatcherActor(orderHistoryRef, update, wallet, mock[UtxPool], mock[ChannelGroup], settings, blockchain, functionalitySettings)
+      with RestartableActor))
 
   val i1 = IssueTransactionV1
     .selfSigned(PrivateKeyAccount(Array.empty), "Unknown".getBytes(), Array.empty, 10000000000L, 8.toByte, true, 100000L, 10000L)
@@ -78,11 +86,12 @@ class MatcherActorSpecification
     val tp = TestProbe()
     tp.send(StorageExtension(system).journalStorage, InMemoryJournalStorage.ClearJournal)
     tp.expectMsg(akka.actor.Status.Success(""))
+    obc.clear()
     super.beforeEach()
 
     actor = system.actorOf(
       Props(
-        new MatcherActor(orderHistoryRef, wallet, mock[UtxPool], mock[ChannelGroup], settings, blockchain, functionalitySettings)
+        new MatcherActor(orderHistoryRef, update, wallet, mock[UtxPool], mock[ChannelGroup], settings, blockchain, functionalitySettings)
         with RestartableActor))
   }
 
@@ -105,54 +114,6 @@ class MatcherActorSpecification
       val invalidOrder = sameAssetsOrder()
       actor ! invalidOrder
       expectMsg(StatusCodeMatcherResponse(StatusCodes.NotFound, "Invalid AssetPair"))
-    }
-
-    "AssetPair with predefined pair" in {
-      def predefinedPair = AssetPair(ByteStr.decodeBase58("BASE2").toOption, ByteStr.decodeBase58("BASE1").toOption)
-
-      actor ! GetOrderBookRequest(predefinedPair, None)
-      expectMsg(GetOrderBookResponse(predefinedPair, Seq(), Seq()))
-
-      def reversePredefinedPair = AssetPair(ByteStr.decodeBase58("BASE1").toOption, ByteStr.decodeBase58("BASE2").toOption)
-
-      actor ! GetOrderBookRequest(reversePredefinedPair, None)
-      expectMsg(StatusCodeMatcherResponse(StatusCodes.Found, "Invalid AssetPair ordering, should be reversed: BASE2-BASE1"))
-    }
-
-    "AssetPair with predefined price assets" in {
-      def priceAsset = AssetPair(ByteStr.decodeBase58("ABC").toOption, ByteStr.decodeBase58("BASE1").toOption)
-
-      actor ! GetOrderBookRequest(priceAsset, None)
-      expectMsg(GetOrderBookResponse(priceAsset, Seq(), Seq()))
-
-      def wrongPriceAsset = AssetPair(ByteStr.decodeBase58("BASE2").toOption, ByteStr.decodeBase58("CDE").toOption)
-
-      actor ! GetOrderBookRequest(wrongPriceAsset, None)
-      expectMsg(StatusCodeMatcherResponse(StatusCodes.Found, "Invalid AssetPair ordering, should be reversed: CDE-BASE2"))
-    }
-
-    "AssetPair with predefined price assets with priorities" in {
-      def predefinedPair = AssetPair(ByteStr.decodeBase58("BASE").toOption, ByteStr.decodeBase58("BASE2").toOption)
-
-      actor ! GetOrderBookRequest(predefinedPair, None)
-      expectMsg(GetOrderBookResponse(predefinedPair, Seq(), Seq()))
-
-      def reversePredefinedPair = AssetPair(ByteStr.decodeBase58("BASE2").toOption, ByteStr.decodeBase58("BASE").toOption)
-
-      actor ! GetOrderBookRequest(reversePredefinedPair, None)
-      expectMsg(StatusCodeMatcherResponse(StatusCodes.Found, "Invalid AssetPair ordering, should be reversed: BASE-BASE2"))
-    }
-
-    "AssetPair with unknown assets" in {
-      def unknownAssets = AssetPair(ByteStr.decodeBase58("Some2").toOption, ByteStr.decodeBase58("Some1").toOption)
-
-      actor ! GetOrderBookRequest(unknownAssets, None)
-      expectMsg(GetOrderBookResponse(unknownAssets, Seq(), Seq()))
-
-      def wrongUnknownAssets = AssetPair(ByteStr.decodeBase58("Some1").toOption, ByteStr.decodeBase58("Some2").toOption)
-
-      actor ! GetOrderBookRequest(wrongUnknownAssets, None)
-      expectMsg(StatusCodeMatcherResponse(StatusCodes.Found, "Invalid AssetPair ordering, should be reversed: Some2-Some1"))
     }
 
     "accept orders with AssetPair with same assets" in {
@@ -182,7 +143,7 @@ class MatcherActorSpecification
       expectMsg(OrderAccepted(order))
 
       actor ! RestartActor
-      actor ! GetOrderBookRequest(pair, None)
+//      actor ! GetOrderBookRequest(pair, None)
       expectMsg(GetOrderBookResponse(pair, Seq(LevelAgg(100000000, 2000)), Seq()))
     }
 
@@ -207,17 +168,7 @@ class MatcherActorSpecification
       }
     }
 
-    "GetOrderBookRequest to the blacklisted asset" in {
-      def pair = AssetPair(ByteStr.decodeBase58("BLACKLST").toOption, ByteStr.decodeBase58("BASE1").toOption)
-
-      actor ! GetOrderBookRequest(pair, None)
-      expectMsg(StatusCodeMatcherResponse(StatusCodes.NotFound, "Invalid Asset ID: BLACKLST"))
-
-      def fbdnNamePair = AssetPair(Some(i2.assetId()), ByteStr.decodeBase58("BASE1").toOption)
-
-      actor ! GetOrderBookRequest(fbdnNamePair, None)
-      expectMsg(StatusCodeMatcherResponse(StatusCodes.NotFound, "Invalid Asset Name: ForbiddenName"))
-    }
+    "GetOrderBookRequest to the blacklisted asset" ignore {}
   }
 
   "GetMarketsResponse" should {

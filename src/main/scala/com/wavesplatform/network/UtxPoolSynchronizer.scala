@@ -46,7 +46,7 @@ object UtxPoolSynchronizer {
                   xs.foreach {
                     case (_, tx) =>
                       ops.putIfNew(tx) match {
-                        case Right((true, _)) => allChannels.write(RawBytes.from(tx), channelMatcher)
+                        case Right((true, _)) => // allChannels.write(RawBytes.from(tx), channelMatcher)
                         case _                =>
                       }
                   }
