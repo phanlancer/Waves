@@ -98,8 +98,10 @@ class MatcherActor(orderHistory: ActorRef,
     !settings.blacklistedAssets.contains(aPair.amountAssetStr) :| s"Invalid Asset ID: ${aPair.amountAssetStr}"
   }
 
+  private var blacklistAddresses = Set.empty[Address]
+
   def checkBlacklistedAddress(address: Address)(f: => Unit): Unit = {
-    val v = !settings.blacklistedAddresses.contains(address.address) :| s"Invalid Address: ${address.address}"
+    val v = !(settings.blacklistedAddresses(address.address) || blacklistAddresses(address)) :| s"Invalid Address: ${address.address}"
     if (!v) {
       sender() ! StatusCodeMatcherResponse(StatusCodes.Forbidden, v.messages())
     } else {
@@ -209,7 +211,9 @@ class MatcherActor(orderHistory: ActorRef,
       createBalanceWatcher()
   }
 
-  override def receiveCommand: Receive = forwardToOrderBook
+  override def receiveCommand: Receive = forwardToOrderBook orElse {
+    case BlacklistAddresses(newBlacklist) => blacklistAddresses = newBlacklist
+  }
 
   override def persistenceId: String = "matcher"
 

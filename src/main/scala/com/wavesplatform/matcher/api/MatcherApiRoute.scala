@@ -1,7 +1,8 @@
 package com.wavesplatform.matcher.api
 
-import javax.ws.rs.Path
+import java.io.{PrintWriter, StringWriter}
 
+import javax.ws.rs.Path
 import akka.actor.ActorRef
 import akka.http.scaladsl.model.{StatusCodes, Uri}
 import akka.http.scaladsl.server.{Directive1, Route}
@@ -17,17 +18,19 @@ import com.wavesplatform.matcher.market.OrderHistoryActor._
 import com.wavesplatform.settings.RestAPISettings
 import io.swagger.annotations._
 import play.api.libs.json._
-import scorex.account.PublicKeyAccount
+import scorex.account.{Address, PublicKeyAccount}
 import scorex.api.http._
 import com.wavesplatform.utils.Base58
 import scorex.transaction.assets.exchange.OrderJson._
 import scorex.transaction.assets.exchange.{AssetPair, Order}
 import scorex.utils.NTP
 import scorex.wallet.Wallet
+import com.wavesplatform.state._
 
 import scala.concurrent.ExecutionContext.Implicits.global
 import scala.concurrent.Future
 import scala.concurrent.duration._
+import scala.util.control.NonFatal
 import scala.util.{Failure, Success, Try}
 
 @Path("/matcher")
@@ -45,7 +48,7 @@ case class MatcherApiRoute(wallet: Wallet,
     pathPrefix("matcher") {
       matcherPublicKey ~ orderBook ~ place ~ getAssetPairAndPublicKeyOrderHistory ~ getPublicKeyOrderHistory ~
         getAllOrderHistory ~ getTradableBalance ~ reservedBalance ~ orderStatus ~
-        historyDelete ~ cancel ~ orderbooks ~ orderBookDelete ~ getTransactionsByOrder ~ forceCancelOrder
+        historyDelete ~ cancel ~ orderbooks ~ orderBookDelete ~ getTransactionsByOrder ~ forceCancelOrder ~ blacklistAddresses
     }
 
   @Path("/")
@@ -394,5 +397,19 @@ case class MatcherApiRoute(wallet: Wallet,
       (txWriter ? GetTransactionsByOrder(orderId))
         .mapTo[MatcherResponse]
         .map(r => r.code -> r.json))
+  }
+
+  def blacklistAddresses: Route = (path("blacklist") & withAuth) {
+    json[Seq[String]] { addresses =>
+      try {
+        matcher ! BlacklistAddresses(addresses.map(Address.fromString(_).explicitGet()).toSet)
+        StatusCodes.Accepted
+      } catch {
+        case NonFatal(e) =>
+          val sw = new StringWriter
+          e.printStackTrace(new PrintWriter(sw))
+          StatusCodes.BadRequest -> sw.toString
+      }
+    }
   }
 }
