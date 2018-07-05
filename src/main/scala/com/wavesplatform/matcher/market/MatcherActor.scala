@@ -11,11 +11,11 @@ import com.wavesplatform.matcher.market.OrderBookActor._
 import com.wavesplatform.matcher.model.Events.BalanceChanged
 import com.wavesplatform.settings.FunctionalitySettings
 import com.wavesplatform.state.Blockchain
+import com.wavesplatform.utils.Base58
 import com.wavesplatform.utx.UtxPool
 import io.netty.channel.group.ChannelGroup
 import play.api.libs.json._
 import scorex.account.Address
-import com.wavesplatform.utils.Base58
 import scorex.transaction.AssetId
 import scorex.transaction.assets.exchange.Validation.booleanOperators
 import scorex.transaction.assets.exchange.{AssetPair, Order, Validation}
@@ -98,10 +98,12 @@ class MatcherActor(orderHistory: ActorRef,
     !settings.blacklistedAssets.contains(aPair.amountAssetStr) :| s"Invalid Asset ID: ${aPair.amountAssetStr}"
   }
 
-  private var blacklistAddresses = Set.empty[Address]
+  private var blacklistAddresses = Map.empty[AssetId, Set[Address]]
 
-  def checkBlacklistedAddress(address: Address)(f: => Unit): Unit = {
-    val v = !(settings.blacklistedAddresses(address.address) || blacklistAddresses(address)) :| s"Invalid Address: ${address.address}"
+  def checkBlacklistedAddress(assetPair: AssetPair, address: Address)(f: => Unit): Unit = {
+    def assetIsBlacklisted(assetId: Option[AssetId]) = assetId.exists(id => blacklistAddresses.getOrElse(id, Set.empty)(address))
+
+    val v = !(settings.blacklistedAddresses(address.address) || assetIsBlacklisted(assetPair.amountAsset) || assetIsBlacklisted(assetPair.priceAsset)) :| s"Invalid Address: ${address.address}"
     if (!v) {
       sender() ! StatusCodeMatcherResponse(StatusCodes.Forbidden, v.messages())
     } else {
@@ -146,7 +148,7 @@ class MatcherActor(orderHistory: ActorRef,
 
     case order: Order =>
       checkAssetPair(order) {
-        checkBlacklistedAddress(order.senderPublicKey) {
+        checkBlacklistedAddress(order.assetPair, order.senderPublicKey) {
           context
             .child(OrderBookActor.name(order.assetPair))
             .fold(createAndForward(order.assetPair, order))(forwardReq(order))
@@ -215,7 +217,8 @@ class MatcherActor(orderHistory: ActorRef,
   }
 
   override def receiveCommand: Receive = forwardToOrderBook orElse {
-    case BlacklistAddresses(newBlacklist) => blacklistAddresses = newBlacklist
+    case BlacklistAddresses(assetId, newBlacklist) =>
+      blacklistAddresses += assetId -> newBlacklist
   }
 
   override def persistenceId: String = "matcher"
