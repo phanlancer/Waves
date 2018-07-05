@@ -111,9 +111,9 @@ class MatcherActor(orderHistory: ActorRef,
     }
   }
 
-  def createAndForward(pair: AssetPair, order: Any): Unit = {
-    val orderBook = createOrderBook(pair)
-    persistAsync(OrderBookCreated(pair)) { _ =>
+  def createAndForward(order: Order): Unit = {
+    val orderBook = createOrderBook(order.assetPair)
+    persistAsync(OrderBookCreated(order.assetPair)) { _ =>
       forwardReq(order)(orderBook)
     }
   }
@@ -151,16 +151,16 @@ class MatcherActor(orderHistory: ActorRef,
         checkBlacklistedAddress(order.assetPair, order.senderPublicKey) {
           context
             .child(OrderBookActor.name(order.assetPair))
-            .fold(createAndForward(order.assetPair, order))(forwardReq(order))
+            .fold(createAndForward(order))(forwardReq(order))
         }
       }
 
     case ob: DeleteOrderBookRequest =>
-      val ov = basicValidation(ob) && checkPairOrdering(ob.assetPair)
+      val ov = basicValidation(ob)
       if (ov) {
         context
           .child(OrderBookActor.name(ob.assetPair))
-          .fold(createAndForward(ob.assetPair, ob))(forwardReq(ob))
+          .fold(returnEmptyOrderBook(ob.assetPair))(forwardReq(ob))
         removeOrderBook(ob.assetPair)
       } else {
         sender() ! StatusCodeMatcherResponse(StatusCodes.NotFound, ov.messages())
