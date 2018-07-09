@@ -6,6 +6,7 @@ import akka.persistence._
 import com.google.common.cache.CacheBuilder
 import com.wavesplatform.matcher.MatcherSettings
 import com.wavesplatform.matcher.api.{CancelOrderRequest, MatcherResponse}
+import com.wavesplatform.matcher.market.MatcherActor.{Shutdown, ShutdownComplete}
 import com.wavesplatform.matcher.market.OrderBookActor._
 import com.wavesplatform.matcher.market.OrderHistoryActor._
 import com.wavesplatform.matcher.model.Events.{Event, ExchangeTransactionCreated, OrderAdded, OrderExecuted}
@@ -14,10 +15,10 @@ import com.wavesplatform.matcher.model._
 import com.wavesplatform.network._
 import com.wavesplatform.settings.FunctionalitySettings
 import com.wavesplatform.state.Blockchain
+import com.wavesplatform.utils.Base58
 import com.wavesplatform.utx.UtxPool
 import io.netty.channel.group.ChannelGroup
 import play.api.libs.json._
-import com.wavesplatform.utils.Base58
 import scorex.transaction.ValidationError
 import scorex.transaction.ValidationError.{AccountBalanceError, GenericError, OrderValidationError}
 import scorex.transaction.assets.exchange._
@@ -27,8 +28,6 @@ import scorex.wallet.Wallet
 import scala.annotation.tailrec
 import scala.concurrent.ExecutionContext.Implicits.global
 import scala.concurrent.duration._
-import MatcherActor.{Shutdown, ShutdownComplete}
-import akka.actor.Status.Failure
 
 class OrderBookActor(assetPair: AssetPair,
                      val orderHistory: ActorRef,

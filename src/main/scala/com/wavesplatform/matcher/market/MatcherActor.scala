@@ -1,22 +1,21 @@
 package com.wavesplatform.matcher.market
 
-import akka.actor.Status.Failure
 import akka.actor.{Actor, ActorRef, Props}
 import akka.http.scaladsl.model.{StatusCode, StatusCodes}
 import akka.persistence.{PersistentActor, RecoveryCompleted}
 import akka.routing.FromConfig
 import com.google.common.base.Charsets
 import com.wavesplatform.matcher.MatcherSettings
-import com.wavesplatform.matcher.api.{MatcherResponse, StatusCodeMatcherResponse}
+import com.wavesplatform.matcher.api.{BadMatcherResponse, MatcherResponse, StatusCodeMatcherResponse}
 import com.wavesplatform.matcher.market.OrderBookActor._
 import com.wavesplatform.matcher.model.Events.BalanceChanged
 import com.wavesplatform.settings.FunctionalitySettings
 import com.wavesplatform.state.Blockchain
+import com.wavesplatform.utils.Base58
 import com.wavesplatform.utx.UtxPool
 import io.netty.channel.group.ChannelGroup
 import play.api.libs.json._
 import scorex.account.Address
-import com.wavesplatform.utils.Base58
 import scorex.transaction.AssetId
 import scorex.transaction.assets.exchange.Validation.booleanOperators
 import scorex.transaction.assets.exchange.{AssetPair, Order, Validation}
@@ -191,7 +190,7 @@ class MatcherActor(orderHistory: ActorRef,
   }
 
   def shuttingDown: Receive = {
-    case _ => sender() ! Failure(akka.actor.IllegalActorStateException("MatcherActor is shutting down"))
+    case _ => sender() ! BadMatcherResponse(StatusCodes.ServiceUnavailable, "System is going shutdown")
   }
 
   def initPredefinedPairs(): Unit = {
