@@ -27,6 +27,8 @@ import scorex.wallet.Wallet
 import scala.annotation.tailrec
 import scala.concurrent.ExecutionContext.Implicits.global
 import scala.concurrent.duration._
+import MatcherActor.{Shutdown, ShutdownComplete}
+import akka.actor.Status.Failure
 
 class OrderBookActor(assetPair: AssetPair,
                      val orderHistory: ActorRef,
@@ -47,6 +49,9 @@ class OrderBookActor(assetPair: AssetPair,
   private var orderBook           = OrderBook.empty
   private var apiSender           = Option.empty[ActorRef]
   private var cancellable         = Option.empty[Cancellable]
+
+  private var shuttingDown             = false
+  private var shutDownSender: ActorRef = ActorRef.noSender
 
   private lazy val alreadyCanceledOrders = CacheBuilder
     .newBuilder()
@@ -76,13 +81,21 @@ class OrderBookActor(assetPair: AssetPair,
 
   private def snapshotsCommands: Receive = {
     case SaveSnapshot =>
-      deleteSnapshots(SnapshotSelectionCriteria.Latest)
       saveSnapshot(Snapshot(orderBook))
     case SaveSnapshotSuccess(metadata) =>
       log.info(s"Snapshot saved with metadata $metadata")
       deleteMessages(metadata.sequenceNr)
+      deleteSnapshots(SnapshotSelectionCriteria.Latest.copy(maxSequenceNr = metadata.sequenceNr - 1))
+      if (shuttingDown) {
+        shutDownSender ! ShutdownComplete
+        context.stop(self)
+      }
     case SaveSnapshotFailure(metadata, reason) =>
       log.error(s"Failed to save snapshot: $metadata, $reason.")
+      if (shuttingDown) {
+        shutDownSender ! ShutdownComplete
+        context.stop(self)
+      }
     case DeleteOrderBookRequest(pair) =>
       orderBook.asks.values
         .++(orderBook.bids.values)
@@ -96,6 +109,12 @@ class OrderBookActor(assetPair: AssetPair,
       log.info(s"$persistenceId DeleteMessagesSuccess up to $toSequenceNr")
     case DeleteMessagesFailure(cause: Throwable, toSequenceNr: Long) =>
       log.error(s"$persistenceId DeleteMessagesFailure up to $toSequenceNr, reason: $cause")
+    case Shutdown =>
+      if (!shuttingDown) {
+        shuttingDown = true
+        shutDownSender = sender()
+        saveSnapshot(Snapshot(orderBook))
+      }
   }
 
   private def waitingValidation: Receive = readOnlyCommands orElse {

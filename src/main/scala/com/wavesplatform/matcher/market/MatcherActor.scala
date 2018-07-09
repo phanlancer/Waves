@@ -1,6 +1,7 @@
 package com.wavesplatform.matcher.market
 
-import akka.actor.{ActorRef, Props}
+import akka.actor.Status.Failure
+import akka.actor.{Actor, ActorRef, Props}
 import akka.http.scaladsl.model.{StatusCode, StatusCodes}
 import akka.persistence.{PersistentActor, RecoveryCompleted}
 import akka.routing.FromConfig
@@ -183,6 +184,14 @@ class MatcherActor(orderHistory: ActorRef,
           .child(OrderBookActor.name(ob.assetPair))
           .fold(returnEmptyOrderBook(ob.assetPair))(forwardReq(ob))
       }
+
+    case Shutdown =>
+      context.become(shuttingDown)
+      context.actorOf(Props(classOf[GracefulShutdownActor], context.children.toVector, sender()))
+  }
+
+  def shuttingDown: Receive = {
+    case _ => sender() ! Failure(akka.actor.IllegalActorStateException("MatcherActor is shutting down"))
   }
 
   def initPredefinedPairs(): Unit = {
@@ -236,6 +245,10 @@ object MatcherActor {
 
   case object GetMarkets
 
+  case object Shutdown
+
+  case object ShutdownComplete
+
   case class GetMarketsResponse(publicKey: Array[Byte], markets: Seq[MarketData]) extends MatcherResponse {
     def getMarketsJs: JsValue =
       JsArray(
@@ -273,5 +286,20 @@ object MatcherActor {
     else if (buffer1.isEmpty) -1
     else if (buffer2.isEmpty) 1
     else ByteArray.compare(buffer1.get, buffer2.get)
+  }
+
+  class GracefulShutdownActor(children: Vector[ActorRef], receiver: ActorRef) extends Actor {
+    children.foreach(_ ! Shutdown)
+
+    override def receive: Receive = state(children.size)
+
+    private def state(expectedResponses: Int): Receive = {
+      case ShutdownComplete =>
+        if (expectedResponses > 1) context.become(state(expectedResponses - 1))
+        else {
+          receiver ! ShutdownComplete
+          context.stop(self)
+        }
+    }
   }
 }
